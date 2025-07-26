@@ -13,7 +13,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")  # e.g. https://telegram-bot-bohe.onrender.com
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")  # e.g. https://telegram-bot-xr0o.onrender.com
 PORT = int(os.environ.get("PORT", 10000))
 
 # Configure Gemini
