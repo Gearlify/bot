@@ -40,6 +40,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     response = model.generate_content(user_text)
     await update.message.reply_text(response.text)
 
+@flask_app.route('/webhook', methods=['POST'])
+def telegram_webhook():
+    return "OK", 200
+
 def run_http():
     print(f"🌐 Starting HTTP server on port {PORT}")
     flask_app.run(host="0.0.0.0", port=PORT)
