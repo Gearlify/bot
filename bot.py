@@ -1,156 +1,154 @@
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-)
-from flask import Flask, request
-import google.generativeai as genai
 import os
-import threading
-import time
 import asyncio
-import json
+from flask import Flask, request
+from telegram import Update, Bot
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import google.generativeai as genai
+import logging
 from dotenv import load_dotenv
+
+# Enable logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
+# Environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")  # e.g. https://telegram-bot-xr0o.onrender.com
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 PORT = int(os.environ.get("PORT", 10000))
 
 # Configure Gemini
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-1.5-flash")
 
-# Flask app (for health check and webhook hosting)
-flask_app = Flask(__name__)
+# Create Flask app
+app = Flask(__name__)
 
-# Global variable to store the bot application
-bot_app = None
+# Global bot application
+bot_application = None
 
-@flask_app.route('/')
+@app.route('/')
 def index():
     return "<h3>✅ Telegram Gemini Bot is running on webhook!</h3>"
 
-@flask_app.route('/health')
+@app.route('/health')
 def health():
     return {"status": "ok", "message": "Bot active!"}
 
-# Telegram Handlers
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Hi! I'm your Gemini AI bot. Ask me anything ✨")
+# Telegram command handlers
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /start command"""
+    try:
+        await update.message.reply_text("Hi! I'm your Gemini AI bot. Ask me anything ✨")
+        logger.info(f"Start command handled for user {update.effective_user.id}")
+    except Exception as e:
+        logger.error(f"Error in start command: {e}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle text messages"""
     try:
         user_text = update.message.text
+        logger.info(f"Processing message: {user_text[:50]}...")
+        
+        # Generate response with Gemini
         response = model.generate_content(user_text)
         await update.message.reply_text(response.text)
+        
+        logger.info("Message processed successfully")
     except Exception as e:
-        print(f"Error handling message: {e}")
+        logger.error(f"Error handling message: {e}")
         await update.message.reply_text("Sorry, I encountered an error. Please try again.")
 
-@flask_app.route('/webhook', methods=['POST'])
-def telegram_webhook():
-    """Handle incoming webhook updates from Telegram"""
-    global bot_app
-    
-    if bot_app is None:
-        return "Bot not initialized", 500
-    
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Handle incoming webhook updates"""
     try:
-        # Get the JSON data from Telegram
-        json_data = request.get_json()
+        # Get JSON data from request
+        json_data = request.get_json(force=True)
+        logger.info("Received webhook update")
         
         if not json_data:
-            return "No JSON data received", 400
+            logger.error("No JSON data in webhook request")
+            return "Bad Request", 400
         
-        # Create Update object from JSON
-        update = Update.de_json(json_data, bot_app.bot)
+        # Create Update object
+        update = Update.de_json(json_data, bot_application.bot)
         
-        # Process the update asynchronously
-        asyncio.create_task(bot_app.process_update(update))
+        # Process update in event loop
+        asyncio.run_coroutine_threadsafe(
+            bot_application.process_update(update),
+            bot_application._loop
+        )
         
         return "OK", 200
+        
     except Exception as e:
-        print(f"Webhook error: {e}")
-        return "Error", 500
+        logger.error(f"Webhook error: {e}")
+        return "Internal Server Error", 500
 
-def run_flask():
-    """Run Flask app"""
-    print(f"🌐 Starting Flask server on port {PORT}")
-    flask_app.run(host="0.0.0.0", port=PORT, debug=False)
-
-async def setup_bot():
-    """Setup the Telegram bot"""
-    global bot_app
+async def setup_application():
+    """Set up the telegram application"""
+    global bot_application
     
-    if not BOT_TOKEN or not GEMINI_API_KEY:
-        print("❌ BOT_TOKEN or GEMINI_API_KEY is missing!")
-        return None
-
-    print("🤖 Setting up Telegram bot...")
-    
-    # Create the Application
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    # Create application
+    application = Application.builder().token(BOT_TOKEN).build()
     
     # Add handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # Initialize application
+    await application.initialize()
+    await application.start()
     
     # Set webhook
     webhook_url = f"{RENDER_EXTERNAL_URL}/webhook"
-    print(f"🔗 Setting webhook to {webhook_url}")
+    logger.info(f"Setting webhook to: {webhook_url}")
     
-    try:
-        await app.bot.set_webhook(url=webhook_url)
-        print("✅ Webhook set successfully!")
-        
-        # Verify webhook
-        webhook_info = await app.bot.get_webhook_info()
-        print(f"📡 Webhook info: {webhook_info.url}")
-        
-    except Exception as e:
-        print(f"❌ Failed to set webhook: {e}")
-        return None
+    await application.bot.set_webhook(
+        url=webhook_url,
+        drop_pending_updates=True
+    )
     
-    # Initialize the bot
-    await app.initialize()
+    # Verify webhook
+    webhook_info = await application.bot.get_webhook_info()
+    logger.info(f"Webhook set successfully: {webhook_info.url}")
     
-    return app
+    bot_application = application
+    return application
 
 def main():
     """Main function"""
-    global bot_app
+    if not BOT_TOKEN or not GEMINI_API_KEY or not RENDER_EXTERNAL_URL:
+        logger.error("Missing required environment variables!")
+        return
     
-    print("🚀 Launching Gemini Telegram Bot")
+    logger.info("Starting Telegram Bot...")
     
-    # Start Flask in a separate thread
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    
-    # Give Flask time to start
-    time.sleep(3)
-    
-    # Setup bot with asyncio
+    # Set up asyncio event loop
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
+    # Setup bot application
     try:
-        bot_app = loop.run_until_complete(setup_bot())
-        if bot_app:
-            print("✅ Bot setup complete! Webhook is active.")
-            # Keep the main thread alive
-            while True:
-                time.sleep(60)
-        else:
-            print("❌ Failed to setup bot")
-    except KeyboardInterrupt:
-        print("🛑 Bot stopped by user")
+        application = loop.run_until_complete(setup_application())
+        application._loop = loop
+        logger.info("Bot application setup complete!")
+        
+        # Start Flask app
+        logger.info(f"Starting Flask server on port {PORT}")
+        app.run(host="0.0.0.0", port=PORT, debug=False)
+        
     except Exception as e:
-        print(f"❌ Bot error: {e}")
+        logger.error(f"Failed to start bot: {e}")
     finally:
-        if bot_app:
-            loop.run_until_complete(bot_app.shutdown())
+        if bot_application:
+            loop.run_until_complete(bot_application.shutdown())
 
 if __name__ == '__main__':
     main()
