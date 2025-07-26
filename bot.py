@@ -1,11 +1,10 @@
 import os
-import asyncio
-from flask import Flask, request
-from telegram import Update, Bot
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import requests
+from flask import Flask, request, jsonify
 import google.generativeai as genai
 import logging
 from dotenv import load_dotenv
+import json
 
 # Enable logging
 logging.basicConfig(
@@ -29,8 +28,39 @@ model = genai.GenerativeModel("gemini-1.5-flash")
 # Create Flask app
 app = Flask(__name__)
 
-# Global bot application
-bot_application = None
+# Telegram API base URL
+TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+def send_message(chat_id, text):
+    """Send message to Telegram chat"""
+    try:
+        url = f"{TELEGRAM_API_URL}/sendMessage"
+        data = {
+            "chat_id": chat_id,
+            "text": text
+        }
+        response = requests.post(url, json=data)
+        return response.json()
+    except Exception as e:
+        logger.error(f"Error sending message: {e}")
+        return None
+
+def set_webhook():
+    """Set the webhook URL"""
+    try:
+        webhook_url = f"{RENDER_EXTERNAL_URL}/webhook"
+        url = f"{TELEGRAM_API_URL}/setWebhook"
+        data = {
+            "url": webhook_url,
+            "drop_pending_updates": True
+        }
+        response = requests.post(url, json=data)
+        result = response.json()
+        logger.info(f"Webhook set result: {result}")
+        return result
+    except Exception as e:
+        logger.error(f"Error setting webhook: {e}")
+        return None
 
 @app.route('/')
 def index():
@@ -38,117 +68,91 @@ def index():
 
 @app.route('/health')
 def health():
-    return {"status": "ok", "message": "Bot active!"}
+    return jsonify({"status": "ok", "message": "Bot active!"})
 
-# Telegram command handlers
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /start command"""
-    try:
-        await update.message.reply_text("Hi! I'm your Gemini AI bot. Ask me anything ✨")
-        logger.info(f"Start command handled for user {update.effective_user.id}")
-    except Exception as e:
-        logger.error(f"Error in start command: {e}")
+@app.route('/set_webhook')
+def setup_webhook():
+    """Manually set webhook (for debugging)"""
+    result = set_webhook()
+    return jsonify(result)
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle text messages"""
+@app.route('/webhook_info')
+def webhook_info():
+    """Get webhook info"""
     try:
-        user_text = update.message.text
-        logger.info(f"Processing message: {user_text[:50]}...")
-        
-        # Generate response with Gemini
-        response = model.generate_content(user_text)
-        await update.message.reply_text(response.text)
-        
-        logger.info("Message processed successfully")
+        url = f"{TELEGRAM_API_URL}/getWebhookInfo"
+        response = requests.get(url)
+        return jsonify(response.json())
     except Exception as e:
-        logger.error(f"Error handling message: {e}")
-        await update.message.reply_text("Sorry, I encountered an error. Please try again.")
+        return jsonify({"error": str(e)})
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Handle incoming webhook updates"""
     try:
         # Get JSON data from request
-        json_data = request.get_json(force=True)
-        logger.info("Received webhook update")
+        json_data = request.get_json()
         
         if not json_data:
-            logger.error("No JSON data in webhook request")
+            logger.error("No JSON data received")
             return "Bad Request", 400
         
-        # Create Update object
-        update = Update.de_json(json_data, bot_application.bot)
+        logger.info("Received webhook update")
         
-        # Process update in event loop
-        asyncio.run_coroutine_threadsafe(
-            bot_application.process_update(update),
-            bot_application._loop
-        )
+        # Check if it's a message
+        if 'message' in json_data:
+            message = json_data['message']
+            chat_id = message['chat']['id']
+            
+            # Handle /start command
+            if 'text' in message and message['text'] == '/start':
+                send_message(chat_id, "Hi! I'm your Gemini AI bot. Ask me anything ✨")
+                logger.info(f"Start command handled for chat {chat_id}")
+                
+            # Handle regular messages
+            elif 'text' in message:
+                user_text = message['text']
+                logger.info(f"Processing message from chat {chat_id}: {user_text[:50]}...")
+                
+                try:
+                    # Generate response with Gemini
+                    response = model.generate_content(user_text)
+                    send_message(chat_id, response.text)
+                    logger.info("Message processed successfully")
+                    
+                except Exception as e:
+                    logger.error(f"Error generating response: {e}")
+                    send_message(chat_id, "Sorry, I encountered an error. Please try again.")
         
         return "OK", 200
         
     except Exception as e:
         logger.error(f"Webhook error: {e}")
-        return "Internal Server Error", 500
+        return "Error", 500
 
-async def setup_application():
-    """Set up the telegram application"""
-    global bot_application
-    
-    # Create application
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    # Add handlers
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    # Initialize application
-    await application.initialize()
-    await application.start()
-    
-    # Set webhook
-    webhook_url = f"{RENDER_EXTERNAL_URL}/webhook"
-    logger.info(f"Setting webhook to: {webhook_url}")
-    
-    await application.bot.set_webhook(
-        url=webhook_url,
-        drop_pending_updates=True
-    )
-    
-    # Verify webhook
-    webhook_info = await application.bot.get_webhook_info()
-    logger.info(f"Webhook set successfully: {webhook_info.url}")
-    
-    bot_application = application
-    return application
+@app.before_first_request
+def setup():
+    """Set webhook on first request"""
+    logger.info("Setting up webhook...")
+    set_webhook()
 
 def main():
     """Main function"""
     if not BOT_TOKEN or not GEMINI_API_KEY or not RENDER_EXTERNAL_URL:
         logger.error("Missing required environment variables!")
+        logger.error(f"BOT_TOKEN: {'✓' if BOT_TOKEN else '✗'}")
+        logger.error(f"GEMINI_API_KEY: {'✓' if GEMINI_API_KEY else '✗'}")
+        logger.error(f"RENDER_EXTERNAL_URL: {'✓' if RENDER_EXTERNAL_URL else '✗'}")
         return
     
     logger.info("Starting Telegram Bot...")
     
-    # Set up asyncio event loop
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    # Set webhook immediately
+    set_webhook()
     
-    # Setup bot application
-    try:
-        application = loop.run_until_complete(setup_application())
-        application._loop = loop
-        logger.info("Bot application setup complete!")
-        
-        # Start Flask app
-        logger.info(f"Starting Flask server on port {PORT}")
-        app.run(host="0.0.0.0", port=PORT, debug=False)
-        
-    except Exception as e:
-        logger.error(f"Failed to start bot: {e}")
-    finally:
-        if bot_application:
-            loop.run_until_complete(bot_application.shutdown())
+    # Start Flask app
+    logger.info(f"Starting Flask server on port {PORT}")
+    app.run(host="0.0.0.0", port=PORT, debug=False)
 
 if __name__ == '__main__':
     main()
