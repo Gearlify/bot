@@ -130,9 +130,8 @@ def webhook():
         logger.error(f"Webhook error: {e}")
         return "Error", 500
 
-@app.before_first_request
-def setup():
-    """Set webhook on first request"""
+def setup_webhook_on_startup():
+    """Set webhook on startup"""
     logger.info("Setting up webhook...")
     set_webhook()
 
@@ -148,7 +147,7 @@ def main():
     logger.info("Starting Telegram Bot...")
     
     # Set webhook immediately
-    set_webhook()
+    setup_webhook_on_startup()
     
     # Start Flask app
     logger.info(f"Starting Flask server on port {PORT}")
