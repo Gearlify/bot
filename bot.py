@@ -11,7 +11,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)                     
 
 load_dotenv()
 
@@ -23,7 +23,7 @@ PORT = int(os.environ.get("PORT", 10000))
 
 # Configure Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
+model = genai.GenerativeModel("gemini-2.5-pro")
 
 # Create Flask app
 app = Flask(__name__)
@@ -105,7 +105,7 @@ def webhook():
             chat_id = message['chat']['id']
             
             # Handle /start command
-            if 'text' in message and message['text'] == '/start':
+            if 'text' in message and message['text'] == 'Hi':
                 send_message(chat_id, "Hi! I'm your Gemini AI bot. Ask me anything ✨")
                 logger.info(f"Start command handled for chat {chat_id}")
                 
