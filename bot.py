@@ -23,7 +23,7 @@ PORT = int(os.environ.get("PORT", 10000))
 
 # Configure Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-2.5-pro")
+model = genai.GenerativeModel("gemini-1.5-pro")
 
 # Create Flask app
 app = Flask(__name__)
